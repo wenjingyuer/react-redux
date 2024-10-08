@@ -113,6 +113,8 @@ function subscribeUpdates(
   additionalSubscribeListener: () => void,
 ) {
   // If we're not subscribed to the store, nothing to do here
+
+  // 如果没有订阅store, 直接返回
   if (!shouldHandleStateChanges) return () => {}
 
   // Capture values for checking if and when this component unmounts
@@ -120,6 +122,8 @@ function subscribeUpdates(
   let lastThrownError: Error | null = null
 
   // We'll run this callback every time a store subscription update propagates to this component
+
+  // 每次当前组件关联的state更新时, 都会执行这个回调函数
   const checkForUpdates = () => {
     if (didUnsubscribe || !isMounted.current) {
       // Don't run stale listeners.
@@ -134,6 +138,7 @@ function subscribeUpdates(
     try {
       // Actually run the selector with the most recent store state and wrapper props
       // to determine what the child props should be
+      // 用 state 和 props 计算最新的childProps
       newChildProps = childPropsSelector(
         latestStoreState,
         lastWrapperProps.current,
@@ -148,6 +153,7 @@ function subscribeUpdates(
     }
 
     // If the child props haven't changed, nothing to do here - cascade the subscription update
+    // 如果childProps没有变化, 那么直接通知下一层组件发起更新即可
     if (newChildProps === lastChildProps.current) {
       if (!renderIsScheduled.current) {
         notifyNestedSubs()
@@ -157,24 +163,33 @@ function subscribeUpdates(
       // as a ref instead of a useState/useReducer because we need a way to determine if that value has
       // been processed.  If this went into useState/useReducer, we couldn't clear out the value without
       // forcing another re-render, which we don't want.
+
+      // 保存最新一次的计算结果
       lastChildProps.current = newChildProps
       childPropsFromStoreUpdate.current = newChildProps
+      // 标记组件组件有计划进行一次渲染了
       renderIsScheduled.current = true
 
       // TODO This is hacky and not how `uSES` is meant to be used
       // Trigger the React `useSyncExternalStore` subscriber
+      // 调用 React 传入的 reactLisenser 函数，随后便会触发组件的重新渲染
       additionalSubscribeListener()
+
+      // 看到这里会发现，还没调用 notifyNestedSubs 以触发其子组件的订阅
     }
   }
 
   // Actually subscribe to the nearest connected ancestor (or store)
+  // 将订阅更新函数绑定到了其上一层 connect 组件的subscription上（默认情况下）
   subscription.onStateChange = checkForUpdates
   subscription.trySubscribe()
 
   // Pull data from the store after first render in case the store has
   // changed since we began.
+  // 第一次运行时就调用一遍 checkForUpdates 函数
   checkForUpdates()
 
+  // useSyncExternalStore 需要的卸载函数
   const unsubscribeWrapper = () => {
     didUnsubscribe = true
     subscription.tryUnsubscribe()
@@ -478,13 +493,16 @@ function connect<
   }
 
   const Context = context
-
+  // 通过工厂函数，对传入的函数做格式校验、默认值处理，并返回一个区分第一次执行和 N 次执行逻辑的新函数
   const initMapStateToProps = mapStateToPropsFactory(mapStateToProps)
   const initMapDispatchToProps = mapDispatchToPropsFactory(mapDispatchToProps)
   const initMergeProps = mergePropsFactory(mergeProps)
 
+  // 判断是否应该处理 state 变化
   const shouldHandleStateChanges = Boolean(mapStateToProps)
 
+  // wrapWithConnect 就是执行 connect(mapStateToProps,mapDispatchToProps) 后的返回值
+  // 一个 HOC：接收一个组件作为参数，返回增强后的组件
   const wrapWithConnect = <TProps,>(
     WrappedComponent: ComponentType<TProps>,
   ) => {
@@ -527,9 +545,13 @@ function connect<
       areMergedPropsEqual,
     }
 
+    // ConnectFuction 可以看作是 HOC 的直接返回值，与 Redux 相关的状态更新逻辑都封装在其中
     function ConnectFunction<TOwnProps>(
       props: InternalConnectProps & TOwnProps,
     ) {
+      // 这里是从 props 中提取出 reactReduxForwardedRef 和其他的 wrapperProps，
+      // 同时将 props.context 作为一个单独的变量返回。
+      // 这样做的目的是为了区分传递给包装组件的实际“数据”属性和控制行为所需的值（如转发的引用、替代上下文实例）。
       const [propsContext, reactReduxForwardedRef, wrapperProps] =
         React.useMemo(() => {
           // Distinguish between actual "data" props that were passed to the wrapper component,
@@ -538,7 +560,9 @@ function connect<
           const { reactReduxForwardedRef, ...wrapperProps } = props
           return [props.context, reactReduxForwardedRef, wrapperProps]
         }, [props])
-
+      // 决定 connect 函数应该使用哪个 React Context 实例来订阅 Redux store 的变化
+      // 1. 如果用户通过 props.context 传递了自定义的 React Context 实例，则使用该实例
+      // 2. 否则，使用默认的 ReactReduxContext 实例
       const ContextToUse: ReactReduxContextInstance = React.useMemo(() => {
         // Users may optionally pass in a custom context instance to use instead of our ReactReduxContext.
         // Memoize the check that determines which context instance we should use.
@@ -566,6 +590,9 @@ function connect<
       // The store _must_ exist as either a prop or in context.
       // We'll check to see if it _looks_ like a Redux store first.
       // This allows us to pass through a `store` prop that is just a plain value.
+
+      // 判断 store 是从 props 中传递的还是从 context 中传递的。
+      // 如果props 中只是个名为 store 的普通对象，那还是会使用 context 中的 store
       const didStoreComeFromProps =
         Boolean(props.store) &&
         Boolean(props.store!.getState) &&
@@ -595,17 +622,23 @@ function connect<
         ? contextValue!.getServerState
         : store.getState
 
+      // 通过工厂函数，生成一个处理组件 props 变化的函数：根据最新的state 和 props 计算最终的 props
+      // childPropsSelector：(nextState: State, nextOwnProps: any) => any
       const childPropsSelector = React.useMemo(() => {
         // The child props selector needs the store reference as an input.
         // Re-create this selector whenever the store changes.
         return defaultSelectorFactory(store.dispatch, selectorFactoryOptions)
       }, [store])
 
+      // subscription：当前组件的订阅实例
+      // notifyNestedSubs: 通知直接后代组件的更新
+      // 那么当前组件怎么被他的 parent 更新？
       const [subscription, notifyNestedSubs] = React.useMemo(() => {
         if (!shouldHandleStateChanges) return NO_SUBSCRIPTION_ARRAY
 
         // This Subscription's source should match where store came from: props vs. context. A component
         // connected to the store via props shouldn't use subscription from context, or vice versa.
+
         const subscription = createSubscription(
           store,
           didStoreComeFromProps ? undefined : contextValue!.subscription,
@@ -623,6 +656,9 @@ function connect<
 
       // Determine what {store, subscription} value should be put into nested context, if necessary,
       // and memoize that value to avoid unnecessary context updates.
+      // 传递给后续组件的 context 值
+      // 1. 如果 store 是从 props 中传递的，则直接使用本组件接收的上层 contextValue
+      // 2. 如果 store 是从 context 中传递的，则需要同当前的 subscription 覆盖原始 contextValue 的 subscription
       const overriddenContextValue = React.useMemo(() => {
         if (didStoreComeFromProps) {
           // This component is directly subscribed to a store from props.
@@ -643,6 +679,7 @@ function connect<
       const lastChildProps = React.useRef<unknown>(undefined)
       const lastWrapperProps = React.useRef(wrapperProps)
       const childPropsFromStoreUpdate = React.useRef<unknown>(undefined)
+      // 标记当前组件是否有正在计划的渲染
       const renderIsScheduled = React.useRef(false)
       const isMounted = React.useRef(false)
 
@@ -654,6 +691,7 @@ function connect<
         undefined,
       )
 
+      // 判断当前组件是否被挂载
       useIsomorphicLayoutEffect(() => {
         isMounted.current = true
         return () => {
@@ -661,6 +699,9 @@ function connect<
         }
       }, [])
 
+      //返回一个闭包函数，基于最新的 store 状态和 wrapperProps 计算实际业务子组件的 props
+      // 1. 上次计算的结果存在，wrapperProps 没有变化，则直接使用上次计算的结果——这种情况也就是由 state 变化造成的重新调用
+      // 2. 重新调用 childPropsSelector 计算子组件的 props——这种情况是 wrapperProps 变化造成的
       const actualChildPropsSelector = React.useMemo(() => {
         const selector = () => {
           // Tricky logic here:
@@ -689,12 +730,13 @@ function connect<
       // about useLayoutEffect in SSR, so we try to detect environment and fall back to
       // just useEffect instead to avoid the warning, since neither will run anyway.
 
+      // 一个用于提供给 useSyncExternalStore 的订阅函数
       const subscribeForReact = React.useMemo(() => {
         const subscribe = (reactListener: () => void) => {
           if (!subscription) {
             return () => {}
           }
-
+          // 其中会绑定 reactListener 函数到 subscription 上，是绑定 Redux state 变化 和 React 组件更新的核心逻辑
           return subscribeUpdates(
             shouldHandleStateChanges,
             store,
@@ -714,6 +756,9 @@ function connect<
         return subscribe
       }, [subscription])
 
+      // 这里视作 useEffct，会在每次渲染都执行：
+      // 保存最新的 wrapperProps
+      // 如果 childPropsFromStoreUpdate 的值不为空，则说明当前组件的渲染是由 store 引起的，然后执行notifyNestedSubs通知直接后代组件更新
       useIsomorphicLayoutEffectWithArgs(captureWrapperProps, [
         lastWrapperProps,
         lastChildProps,
@@ -746,6 +791,9 @@ function connect<
         throw err
       }
 
+      // 这里就视作 useLayoutEffect
+      // 清空错误信息和上次渲染的子组件 props
+      // 保存这次传递给业务子组件的 props
       useIsomorphicLayoutEffect(() => {
         latestSubscriptionCallbackError.current = undefined
         childPropsFromStoreUpdate.current = undefined
@@ -754,6 +802,7 @@ function connect<
 
       // Now that all that's done, we can finally try to actually render the child component.
       // We memoize the elements for the rendered child component as an optimization.
+      // 默认都会使用useMemo包裹子组件提高性能
       const renderedWrappedComponent = React.useMemo(() => {
         return (
           // @ts-ignore
@@ -766,6 +815,8 @@ function connect<
 
       // If React sees the exact same element reference as last time, it bails out of re-rendering
       // that child, same as if it was wrapped in React.memo() or returned false from shouldComponentUpdate.
+      // 如果当前的组件订阅了 state 的状态，那么需要用当前组件的 subscription 覆盖 contextValue 的 subscription，
+      // 这样能保证后续组件的更新，能在当前组件响应完 state 变化后再触发
       const renderedChild = React.useMemo(() => {
         if (shouldHandleStateChanges) {
           // If this component is subscribed to store updates, we need to pass its own
@@ -797,7 +848,7 @@ function connect<
     >
     Connect.WrappedComponent = WrappedComponent
     Connect.displayName = ConnectFunction.displayName = displayName
-
+    // 转发 Ref
     if (forwardRef) {
       const _forwarded = React.forwardRef(
         function forwardConnectRef(props, ref) {
